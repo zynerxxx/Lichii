@@ -2920,7 +2920,9 @@ private:
                          m_decoded_frames, m_frames_out, m_stream_ended, m_end_queued);
             }
             CompleteHandedFences();
+            m_flush = true;
         }
+        m_cv.notify_all();
         TipcReplyWords(ctx, {});
     }
 

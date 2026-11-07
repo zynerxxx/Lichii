@@ -2741,19 +2741,25 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
         }
     }
-    const ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
+    if (total_used_memory >= expected_memory) {
+        RunGarbageCollector(total_used_memory >= critical_memory);
+    }
+    ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
     if constexpr (requires(const Image& image) { image.OutOfMemory(); }) {
         if (slot_images[new_image_id].OutOfMemory()) {
-            // Left out of the cache: lookups see no image (a null view) and make it again once
-            // the collector has freed memory.
             slot_images.erase(new_image_id);
-            static u32 logged{};
-            if (logged++ < 32) {
-                LOG_ERROR(HW_GPU, "No memory for the {}x{}x{} image at {:#x} (format {}); skipping it",
-                          new_info.size.width, new_info.size.height, new_info.size.depth, gpu_addr,
-                          static_cast<u32>(new_info.format));
+            RunGarbageCollector(true);
+            new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
+            if (slot_images[new_image_id].OutOfMemory()) {
+                slot_images.erase(new_image_id);
+                static u32 logged{};
+                if (logged++ < 32) {
+                    LOG_ERROR(HW_GPU, "No memory for the {}x{}x{} image at {:#x} (format {}); skipping it",
+                              new_info.size.width, new_info.size.height, new_info.size.depth, gpu_addr,
+                              static_cast<u32>(new_info.format));
+                }
+                return ImageId{};
             }
-            return ImageId{};
         }
     }
     Image& new_image = slot_images[new_image_id];
@@ -2781,7 +2787,8 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
 
     for (const ImageId overlap_id : join_ignore_textures) {
         Image& overlap = slot_images[overlap_id];
-        if (True(overlap.flags & ImageFlagBits::GpuModified)) {
+        if (True(overlap.flags & ImageFlagBits::GpuModified) &&
+            False(overlap.flags & ImageFlagBits::Remapped)) {
             UNIMPLEMENTED();
         }
         if (True(overlap.flags & ImageFlagBits::Tracked)) {
