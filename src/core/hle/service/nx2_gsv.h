@@ -1695,6 +1695,7 @@ public:
             {111, &INx2Vi2Session::StubReplyZeroed, "Unknown111"},
             {112, &INx2Vi2Session::StubReplyZeroed, "Unknown112"},
             {113, &INx2Vi2Session::StubReplyZeroed, "Unknown113"},
+            {201, &INx2Vi2Session::StubReplyZeroed, "Unknown201"},
             {202, &INx2Vi2Session::StubReplyZeroed, "Unknown202"},
             {230, &INx2Vi2Session::StubReplyZeroed, "Unknown230"},
             {231, &INx2Vi2Session::StubReplyZeroed, "Unknown231"},
@@ -2648,7 +2649,7 @@ private:
     };
 
     static constexpr u32 NoSyncpoint = ~0U;
-    static constexpr size_t MaxDecodedAhead = 2; // decoded frames held while no image is free
+    static constexpr size_t MaxDecodedAhead = 6; // decoded frames held while no image is free
     static constexpr u32 HostSyncpoints = 192;   // Tegra::Host1x::SyncpointManager
 
     void Log(HLERequestContext& ctx, std::string_view what) {
@@ -2893,6 +2894,8 @@ private:
             m_flush = true;
             m_stream_ended = false;
             m_end_queued = false;
+            m_playback_start_time = {};
+            m_playback_start_pts = 0;
             m_ready->room.store(true, std::memory_order_relaxed);
             // Only Stop: Bananza flushes (8) after its movies end and treats every completed
             // fence as a frame to acquire.
@@ -2990,6 +2993,8 @@ private:
             if (m_flush) {
                 m_flush = false;
                 m_decoded.clear();
+                m_playback_start_time = {};
+                m_playback_start_pts = 0;
                 if (decoder) {
                     lk.unlock();
                     decoder->Reset();
@@ -2998,6 +3003,28 @@ private:
                 continue;
             }
             if (!m_decoded.empty() && !m_free.empty()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (m_playback_start_time == std::chrono::steady_clock::time_point{}) {
+                    m_playback_start_time = now;
+                    m_playback_start_pts = m_decoded.front().pts;
+                } else if (!m_decoded.front().end) {
+                    if (m_decoded.front().pts < m_playback_start_pts ||
+                        m_decoded.front().pts > m_playback_start_pts + 10'000'000) {
+                        m_playback_start_time = now;
+                        m_playback_start_pts = m_decoded.front().pts;
+                    } else {
+                        const auto elapsed_us =
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                now - m_playback_start_time)
+                                .count();
+                        const u64 expected_pts =
+                            m_playback_start_pts + static_cast<u64>(std::max<s64>(elapsed_us, 0));
+                        if (m_decoded.front().pts + 25'000 < expected_pts) {
+                            m_decoded.pop_front();
+                            continue;
+                        }
+                    }
+                }
                 Decoded frame = std::move(m_decoded.front());
                 m_decoded.pop_front();
                 const u32 image = m_free.front();
@@ -3275,6 +3302,8 @@ private:
     bool m_end_queued{};
     bool m_flush{};
     bool m_quit{};
+    std::chrono::steady_clock::time_point m_playback_start_time{};
+    u64 m_playback_start_pts{};
     std::thread m_worker;
 };
 
@@ -3389,6 +3418,7 @@ public:
             {814, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown814"},
             {861, &INx2GraphicsSystemSession::GetCpuImageDescriptor, "GetFeatureCpuImageDescriptor861"},
             {891, &INx2GraphicsSystemSession::CalculateChatImagePoolSize, "CalculateFeatureImagePoolSize891"},
+            {903, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown903"},
             {1003, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1003"},
             {1011, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1011"},
             {1012, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1012"},

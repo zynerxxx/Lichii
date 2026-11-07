@@ -269,9 +269,15 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     // On every GPU: past what a frame needs, more device memory only keeps the textures of earlier
     // scenes (title 1 filled 6.7 GB of an 8 GB card and draws its races in ~5 GB), so collect from
     // MaxCriticalMemory on rather than near the card's budget.
-    critical_memory = (std::min)(critical_memory, MaxCriticalMemory);
+    const u64 device_local = runtime.GetDeviceLocalMemory();
+    const u64 max_crit =
+        (device_local > 0 && device_local <= 6_GiB) ? u64{3100_MiB} : MaxCriticalMemory;
+    critical_memory = (std::min)(critical_memory, max_crit);
+    const u64 max_exp =
+        (device_local > 0 && device_local <= 6_GiB) ? u64{2300_MiB} : critical_memory;
     expected_memory =
-        (std::min)(expected_memory, critical_memory - (std::min)(critical_memory, u64{768_MiB}));
+        (std::min)((std::min)(expected_memory, max_exp),
+                   critical_memory - (std::min)(critical_memory, u64{768_MiB}));
     minimum_memory =
         (std::min)(minimum_memory, expected_memory - (std::min)(expected_memory, u64{1_GiB}));
     // EDEN_NX2_TC_EXPECTED_MIB / EDEN_NX2_TC_CRITICAL_MIB override the collector's thresholds.
@@ -304,8 +310,13 @@ void TextureCache<P>::TickFrame() {
         if (!native_thresholds_applied && gpu_memory != nullptr && gpu_memory->UsesNativeTiling()) {
             native_thresholds_applied = true;
             const u64 device_local = runtime.GetDeviceLocalMemory();
-            critical_memory = (std::max)(critical_memory, device_local - 256_MiB);
-            expected_memory = (std::max)(expected_memory, device_local - 1280_MiB);
+            if (device_local <= 6_GiB) {
+                critical_memory = (std::min)(device_local - 1280_MiB, u64{3100_MiB});
+                expected_memory = (std::min)(critical_memory - 768_MiB, u64{2300_MiB});
+            } else {
+                critical_memory = (std::max)(critical_memory, device_local - 256_MiB);
+                expected_memory = (std::max)(expected_memory, device_local - 1280_MiB);
+            }
             ApplyThresholdOverrides();
             native_critical_memory = critical_memory;
             native_expected_memory = expected_memory;
@@ -342,7 +353,10 @@ void TextureCache<P>::TickFrame() {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
                 if (budget > 2_GiB) {
                     const u64 old_critical = critical_memory;
-                    const u64 margin = (std::min)(budget / 8, 1_GiB);
+                    const u64 device_local = runtime.GetDeviceLocalMemory();
+                    const bool is_small_vram = device_local <= 6_GiB || budget <= 6_GiB;
+                    const u64 margin = is_small_vram ? (std::max<u64>)(budget / 4, 1280_MiB)
+                                                     : (std::min)(budget / 8, 1_GiB);
                     if constexpr (requires { runtime.GetDeviceMemorySlack(); }) {
                         // The usage counted here leaves out the unused part of the allocator's
                         // blocks, which the driver counts and a full heap cannot hand to a new
@@ -357,7 +371,14 @@ void TextureCache<P>::TickFrame() {
                     }
                     critical_memory =
                         budget - (std::min)(margin + pressure_margin + slack_margin, budget / 2);
-                    expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
+                    if (is_small_vram) {
+                        critical_memory = (std::min)(critical_memory, u64{3100_MiB});
+                        expected_memory =
+                            (std::min)(critical_memory - (std::min)(margin, critical_memory / 2),
+                                       u64{2300_MiB});
+                    } else {
+                        expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
+                    }
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time).
                     const u64 change = critical_memory > old_critical
