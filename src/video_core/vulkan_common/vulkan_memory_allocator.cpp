@@ -274,6 +274,13 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
         host.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         host.preferredFlags = 0;
         result = vmaCreateImage(allocator, &ci, &host, &handle, &allocation, &alloc_info);
+        if (result != VK_SUCCESS) {
+            host.usage = VMA_MEMORY_USAGE_AUTO;
+            host.flags = 0;
+            host.preferredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+            host.requiredFlags = 0;
+            result = vmaCreateImage(allocator, &ci, &host, &handle, &allocation, &alloc_info);
+        }
         static u32 host_logged{};
         if (result == VK_SUCCESS && host_logged++ < 16) {
             LOG_WARNING(Render_Vulkan,
@@ -283,7 +290,8 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
                         ci.arrayLayers, static_cast<u32>(ci.format));
         }
     }
-    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ci.imageType != VK_IMAGE_TYPE_1D) {
+    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ci.imageType != VK_IMAGE_TYPE_1D &&
+        device.CanUseUnbackedSparseImages() && device.IsSparseResidencyImage2DSupported()) {
         if (!huge) {
             pressure_events.fetch_add(1, std::memory_order_relaxed);
         }
@@ -327,12 +335,13 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
 }
 
 vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool aliased) const {
-    if (ci.imageType == VK_IMAGE_TYPE_1D) {
+    if (ci.imageType == VK_IMAGE_TYPE_1D || !device.CanUseUnbackedSparseImages() ||
+        !device.IsSparseResidencyImage2DSupported()) {
         return vk::Image{};
     }
     VkImageCreateInfo sparse_ci = ci;
     sparse_ci.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
-    if (aliased) {
+    if (aliased && device.IsSparseResidencyAliasedSupported()) {
         sparse_ci.flags |= VK_IMAGE_CREATE_SPARSE_ALIASED_BIT;
     }
     VkImage sparse{};

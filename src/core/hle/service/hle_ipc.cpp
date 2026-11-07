@@ -69,7 +69,7 @@ Result SessionRequestManager::CompleteSyncRequest(Kernel::KServerSession* server
             result = this->SessionHandler().HandleSyncRequest(*server_session, context);
         }
     } else {
-        ASSERT_MSG(false, "Session handler is invalid, stubbing response!");
+        LOG_WARNING(IPC, "Session handler is invalid, stubbing response!");
         IPC::ResponseBuilder rb(context, 2);
         rb.Push(ResultSuccess);
     }
@@ -313,7 +313,10 @@ Result HLERequestContext::WriteToOutgoingCommandBuffer() {
     }
 
     // Copy the translated command buffer back into the thread's command buffer area.
-    memory.WriteBlock(thread->GetTlsAddress(), cmd_buf.data(), write_size * sizeof(u32));
+    // Ensure the entire command buffer is written so no stale request words remain in TLS.
+    const size_t write_bytes =
+        std::max<size_t>(write_size * sizeof(u32), sizeof(u32) * IPC::COMMAND_BUFFER_LENGTH);
+    memory.WriteBlock(thread->GetTlsAddress(), cmd_buf.data(), write_bytes);
 
     return ResultSuccess;
 }

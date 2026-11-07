@@ -159,6 +159,10 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
             IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords};
             rb.Push(ResultSuccess);
             PushStubZeroes(rb);
+            std::memset(ctx.CommandBuffer() + ctx.write_size, 0,
+                        (IPC::COMMAND_BUFFER_LENGTH -
+                         std::min<size_t>(ctx.write_size, IPC::COMMAND_BUFFER_LENGTH)) *
+                            sizeof(u32));
             return;
         }
     }
@@ -181,6 +185,10 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
         IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords};
         rb.Push(ResultSuccess);
         PushStubZeroes(rb);
+        std::memset(ctx.CommandBuffer() + ctx.write_size, 0,
+                    (IPC::COMMAND_BUFFER_LENGTH -
+                     std::min<size_t>(ctx.write_size, IPC::COMMAND_BUFFER_LENGTH)) *
+                        sizeof(u32));
     }
 }
 

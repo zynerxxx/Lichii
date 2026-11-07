@@ -271,10 +271,10 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
     // MaxCriticalMemory on rather than near the card's budget.
     const u64 device_local = runtime.GetDeviceLocalMemory();
     const u64 max_crit =
-        (device_local > 0 && device_local <= 6_GiB) ? u64{3100_MiB} : MaxCriticalMemory;
+        (device_local > 0 && device_local <= 6_GiB) ? u64{2200_MiB} : MaxCriticalMemory;
     critical_memory = (std::min)(critical_memory, max_crit);
     const u64 max_exp =
-        (device_local > 0 && device_local <= 6_GiB) ? u64{2300_MiB} : critical_memory;
+        (device_local > 0 && device_local <= 6_GiB) ? u64{1500_MiB} : critical_memory;
     expected_memory =
         (std::min)((std::min)(expected_memory, max_exp),
                    critical_memory - (std::min)(critical_memory, u64{768_MiB}));
@@ -311,8 +311,8 @@ void TextureCache<P>::TickFrame() {
             native_thresholds_applied = true;
             const u64 device_local = runtime.GetDeviceLocalMemory();
             if (device_local <= 6_GiB) {
-                critical_memory = (std::min)(device_local - 1280_MiB, u64{3100_MiB});
-                expected_memory = (std::min)(critical_memory - 768_MiB, u64{2300_MiB});
+                critical_memory = (std::min)(device_local - 1280_MiB, u64{2200_MiB});
+                expected_memory = (std::min)(critical_memory - 768_MiB, u64{1500_MiB});
             } else {
                 critical_memory = (std::max)(critical_memory, device_local - 256_MiB);
                 expected_memory = (std::max)(expected_memory, device_local - 1280_MiB);
@@ -372,10 +372,10 @@ void TextureCache<P>::TickFrame() {
                     critical_memory =
                         budget - (std::min)(margin + pressure_margin + slack_margin, budget / 2);
                     if (is_small_vram) {
-                        critical_memory = (std::min)(critical_memory, u64{3100_MiB});
+                        critical_memory = (std::min)(critical_memory, u64{2200_MiB});
                         expected_memory =
                             (std::min)(critical_memory - (std::min)(margin, critical_memory / 2),
-                                       u64{2300_MiB});
+                                       u64{1500_MiB});
                     } else {
                         expected_memory = critical_memory - (std::min)(margin, critical_memory / 2);
                     }
