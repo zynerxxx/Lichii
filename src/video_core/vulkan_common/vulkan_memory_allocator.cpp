@@ -289,6 +289,13 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
             host.requiredFlags = 0;
             result = vmaCreateImage(allocator, &ci, &host, &handle, &allocation, &alloc_info);
         }
+        if (result != VK_SUCCESS) {
+            host.usage = VMA_MEMORY_USAGE_AUTO;
+            host.flags = 0;
+            host.preferredFlags = 0;
+            host.requiredFlags = 0;
+            result = vmaCreateImage(allocator, &ci, &host, &handle, &allocation, &alloc_info);
+        }
         static u32 host_logged{};
         if (result == VK_SUCCESS && host_logged++ < 16) {
             LOG_WARNING(Render_Vulkan,

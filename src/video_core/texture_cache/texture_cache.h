@@ -2750,8 +2750,17 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         }
         total_used_memory -= (std::min)(total_used_memory, gpu_sentenced_bytes);
     }
-    if (total_used_memory >= expected_memory) {
-        RunGarbageCollector(total_used_memory >= critical_memory);
+    const bool driver_near_limit = [&]() {
+        if constexpr (requires { runtime.GetDeviceMemoryBudget(); runtime.GetDeviceMemoryUsage(); }) {
+            const u64 budget = runtime.GetDeviceMemoryBudget();
+            if (budget > 0) {
+                return runtime.GetDeviceMemoryUsage() + 768_MiB >= budget;
+            }
+        }
+        return false;
+    }();
+    if (total_used_memory >= expected_memory || driver_near_limit) {
+        RunGarbageCollector(total_used_memory >= critical_memory || driver_near_limit);
     }
     ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
     if constexpr (requires(const Image& image) { image.OutOfMemory(); }) {
