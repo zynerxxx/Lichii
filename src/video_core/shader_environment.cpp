@@ -1209,14 +1209,6 @@ bool FileEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
     if (it != storage_pointer_types.end()) {
         return it->second != 0;
     }
-    const auto low = cbuf_values.find(MakeCbufKey(index, offset));
-    const auto high = cbuf_values.find(MakeCbufKey(index, offset + 4));
-    if (low != cbuf_values.end() && high != cbuf_values.end()) {
-        const u64 address = u64{low->second} | (u64{high->second} << 32);
-        const bool mapped = address != 0;
-        storage_pointer_types.emplace(MakeCbufKey(index, offset), static_cast<u8>(mapped));
-        return mapped;
-    }
     storage_pointer_types.emplace(MakeCbufKey(index, offset), u8{0});
     return false;
 }

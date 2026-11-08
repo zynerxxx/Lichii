@@ -4966,13 +4966,6 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
                           (device.GetDeviceMemoryUsage() + (u64{768} << 20) >= device.GetDeviceMemoryBudget());
     if (low_vram || intermediate_size_per_layer > (u64{16} << 20)) {
         free_transcodes.clear();
-        if (device.GetDeviceMemoryUsage() + (u64{768} << 20) >= device.GetDeviceMemoryBudget()) {
-            scheduler.Finish();
-            while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
-                pending_transcodes.pop_front();
-            }
-            staging_buffer_pool.ReleaseAll(MemoryUsage::DeviceLocal);
-        }
     }
 
     static u32 transcodes_since_tick = 0;

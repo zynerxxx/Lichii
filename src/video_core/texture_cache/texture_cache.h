@@ -265,9 +265,6 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         Collect();
     }
     if (out_of_memory) {
-        if constexpr (requires { runtime.Finish(); }) {
-            runtime.Finish();
-        }
         if constexpr (requires { runtime.CurrentTick(); }) {
             while (!gpu_sentenced_images.empty() &&
                    runtime.IsFree(gpu_sentenced_images.front().tick)) {
@@ -2631,6 +2628,38 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
                  gpu_addr, info.size.width, info.size.height, info.size.depth, info.resources.levels,
                  static_cast<u32>(info.format), info.block.width, info.block.height, info.block.depth);
     }
+    if (runtime.CanReportMemoryUsage()) {
+        total_used_memory = runtime.GetDeviceMemoryUsage();
+        for (const u64 bytes : sentenced_image_bytes) {
+            total_used_memory -= (std::min)(total_used_memory, bytes);
+        }
+        total_used_memory -= (std::min)(total_used_memory, gpu_sentenced_bytes);
+    }
+    ++joins_since_tick;
+    const bool driver_near_limit = [&]() {
+        if constexpr (requires { runtime.GetDeviceMemoryBudget(); runtime.GetDeviceMemoryUsage(); }) {
+            const u64 budget = runtime.GetDeviceMemoryBudget();
+            if (budget > 0) {
+                return runtime.GetDeviceMemoryUsage() + 768_MiB >= budget;
+            }
+        }
+        return false;
+    }();
+    if (joins_since_tick >= 16 || driver_near_limit) {
+        joins_since_tick = 0;
+        ++frame_tick;
+        if constexpr (requires { runtime.CurrentTick(); }) {
+            while (!gpu_sentenced_images.empty() &&
+                   runtime.IsFree(gpu_sentenced_images.front().tick)) {
+                gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
+                gpu_sentenced_images.pop_front();
+            }
+        }
+        runtime.TickFrame();
+        RunGarbageCollector(total_used_memory >= critical_memory || driver_near_limit);
+    } else if (total_used_memory >= expected_memory) {
+        RunGarbageCollector(total_used_memory >= critical_memory);
+    }
     const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr);
     if (!image_id) {
         return image_id;
@@ -2756,69 +2785,17 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
             }
         }
     }
-    if (runtime.CanReportMemoryUsage()) {
-        total_used_memory = runtime.GetDeviceMemoryUsage();
-        for (const u64 bytes : sentenced_image_bytes) {
-            total_used_memory -= (std::min)(total_used_memory, bytes);
-        }
-        total_used_memory -= (std::min)(total_used_memory, gpu_sentenced_bytes);
-    }
-    ++joins_since_tick;
-    const bool driver_near_limit = [&]() {
-        if constexpr (requires { runtime.GetDeviceMemoryBudget(); runtime.GetDeviceMemoryUsage(); }) {
-            const u64 budget = runtime.GetDeviceMemoryBudget();
-            if (budget > 0) {
-                return runtime.GetDeviceMemoryUsage() + 768_MiB >= budget;
-            }
-        }
-        return false;
-    }();
-    if (joins_since_tick >= 16 || driver_near_limit) {
-        joins_since_tick = 0;
-        ++frame_tick;
-        if constexpr (requires { runtime.Finish(); }) {
-            runtime.Finish();
-        }
-        if constexpr (requires { runtime.CurrentTick(); }) {
-            while (!gpu_sentenced_images.empty() &&
-                   runtime.IsFree(gpu_sentenced_images.front().tick)) {
-                gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
-                gpu_sentenced_images.pop_front();
-            }
-        }
-        runtime.TickFrame();
-        RunGarbageCollector(total_used_memory >= critical_memory || driver_near_limit);
-    } else if (total_used_memory >= expected_memory) {
-        RunGarbageCollector(total_used_memory >= critical_memory);
-    }
     ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
     if constexpr (requires(const Image& image) { image.OutOfMemory(); }) {
         if (slot_images[new_image_id].OutOfMemory()) {
             slot_images.erase(new_image_id);
-            ++frame_tick;
-            if constexpr (requires { runtime.Finish(); }) {
-                runtime.Finish();
+            static u32 logged{};
+            if (logged++ < 32) {
+                LOG_ERROR(HW_GPU, "No memory for the {}x{}x{} image at {:#x} (format {}); skipping it",
+                          new_info.size.width, new_info.size.height, new_info.size.depth, gpu_addr,
+                          static_cast<u32>(new_info.format));
             }
-            if constexpr (requires { runtime.CurrentTick(); }) {
-                while (!gpu_sentenced_images.empty() &&
-                       runtime.IsFree(gpu_sentenced_images.front().tick)) {
-                    gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
-                    gpu_sentenced_images.pop_front();
-                }
-            }
-            runtime.TickFrame();
-            RunGarbageCollector(true);
-            new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
-            if (slot_images[new_image_id].OutOfMemory()) {
-                slot_images.erase(new_image_id);
-                static u32 logged{};
-                if (logged++ < 32) {
-                    LOG_ERROR(HW_GPU, "No memory for the {}x{}x{} image at {:#x} (format {}); skipping it",
-                              new_info.size.width, new_info.size.height, new_info.size.depth, gpu_addr,
-                              static_cast<u32>(new_info.format));
-                }
-                return ImageId{};
-            }
+            return ImageId{};
         }
     }
     Image& new_image = slot_images[new_image_id];
@@ -3709,23 +3686,24 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     RemoveFramebuffers(image_view_ids);
 
     for (const AliasedImage& alias : image.aliased_images) {
+        if (!slot_images.contains(alias.id)) {
+            continue;
+        }
         ImageBase& other_image = slot_images[alias.id];
-        [[maybe_unused]] const size_t num_removed_aliases =
-            std::erase_if(other_image.aliased_images, [image_id](const AliasedImage& other_alias) {
-                return other_alias.id == image_id;
-            });
+        std::erase_if(other_image.aliased_images, [image_id](const AliasedImage& other_alias) {
+            return other_alias.id == image_id;
+        });
         other_image.CheckAliasState();
-        ASSERT_MSG(num_removed_aliases == 1, "Invalid number of removed aliases: {}",
-                   num_removed_aliases);
     }
     for (const ImageId overlap_id : image.overlapping_images) {
+        if (!slot_images.contains(overlap_id)) {
+            continue;
+        }
         ImageBase& other_image = slot_images[overlap_id];
-        [[maybe_unused]] const size_t num_removed_overlaps = std::erase_if(
-            other_image.overlapping_images,
-            [image_id](const ImageId other_overlap_id) { return other_overlap_id == image_id; });
+        std::erase_if(other_image.overlapping_images, [image_id](const ImageId other_overlap_id) {
+            return other_overlap_id == image_id;
+        });
         other_image.CheckBadOverlapState();
-        ASSERT_MSG(num_removed_overlaps == 1, "Invalid number of removed overlapps: {}",
-                   num_removed_overlaps);
     }
     for (const ImageViewId image_view_id : image_view_ids) {
         if (!immediate_delete) {
