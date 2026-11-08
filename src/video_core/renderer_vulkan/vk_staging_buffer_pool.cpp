@@ -283,6 +283,18 @@ void StagingBufferPool::ReleaseCache(MemoryUsage usage) {
     ReleaseLevel(GetCache(usage), current_delete_level);
 }
 
+void StagingBufferPool::ReleaseAll(MemoryUsage usage) {
+    auto& cache = GetCache(usage);
+    for (size_t level = 0; level < NUM_LEVELS; ++level) {
+        auto& entries = cache[level].entries;
+        std::erase_if(entries, [this](const StagingBuffer& entry) {
+            return !entry.deferred && scheduler.IsFree(entry.tick);
+        });
+        cache[level].delete_index = 0;
+        cache[level].iterate_index = 0;
+    }
+}
+
 void StagingBufferPool::ReleaseLevel(StagingBuffersCache& cache, size_t log2) {
     constexpr size_t deletions_per_tick = 16;
     auto& staging = cache[log2];

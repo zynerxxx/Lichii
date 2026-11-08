@@ -645,6 +645,7 @@ private:
 
     u64 modification_tick = 0;
     u64 frame_tick = 0;
+    u32 joins_since_tick = 0;
 
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};

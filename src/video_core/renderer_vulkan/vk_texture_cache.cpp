@@ -2842,6 +2842,9 @@ void TextureCacheRuntime::ReleaseMsaaScratchImage(VkImage image) {
 }
 
 void TextureCacheRuntime::TickFrame() {
+    staging_buffer_pool.TickFrame();
+    staging_buffer_pool.ReleaseAll(MemoryUsage::DeviceLocal);
+
     while (!pending_byte_addressed_shadows.empty() &&
            scheduler.IsFree(pending_byte_addressed_shadows.front().tick)) {
         pending_byte_addressed_shadows.pop_front();
@@ -2860,15 +2863,21 @@ void TextureCacheRuntime::TickFrame() {
     for (const PendingTranscode& t : free_transcodes) {
         free_bytes += decode_bytes(t);
     }
+    const bool low_vram = device.GetDeviceLocalMemory() <= (u64{6} << 30) ||
+                          (device.GetDeviceMemoryUsage() + (u64{1024} << 20) >= device.GetDeviceMemoryBudget());
     while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
         PendingTranscode& done = pending_transcodes.front();
         const u64 bytes = decode_bytes(done);
-        if (free_bytes + bytes <= MaxFreeTranscodeBytes) {
+        const bool keep_in_free = (bytes <= (u64{16} << 20)) && !low_vram;
+        if (free_bytes + bytes <= MaxFreeTranscodeBytes && keep_in_free) {
             done.unused_frames = 0;
             free_bytes += bytes;
             free_transcodes.push_back(std::move(done));
         }
         pending_transcodes.pop_front();
+    }
+    if (low_vram) {
+        free_transcodes.clear();
     }
     std::erase_if(free_transcodes, [](PendingTranscode& t) {
         return ++t.unused_frames > MAX_UNUSED_SCRATCH_FRAMES;
@@ -4953,12 +4962,35 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         ? std::clamp<u32>(static_cast<u32>(MaxBatchBytes / intermediate_size_per_layer), 1U, layers)
         : layers;
 
+    const bool low_vram = device.GetDeviceLocalMemory() <= (u64{6} << 30) ||
+                          (device.GetDeviceMemoryUsage() + (u64{768} << 20) >= device.GetDeviceMemoryBudget());
+    if (low_vram || intermediate_size_per_layer > (u64{16} << 20)) {
+        free_transcodes.clear();
+        if (device.GetDeviceMemoryUsage() + (u64{768} << 20) >= device.GetDeviceMemoryBudget()) {
+            scheduler.Finish();
+            while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
+                pending_transcodes.pop_front();
+            }
+            staging_buffer_pool.ReleaseAll(MemoryUsage::DeviceLocal);
+        }
+    }
+
+    static u32 transcodes_since_tick = 0;
+    if (++transcodes_since_tick >= 16 || (low_vram && transcodes_since_tick >= 4)) {
+        transcodes_since_tick = 0;
+        scheduler.Flush();
+        staging_buffer_pool.TickFrame();
+        staging_buffer_pool.ReleaseAll(MemoryUsage::DeviceLocal);
+    }
+
     // A decode image of the same shape the GPU is done with: title 1's title screen decodes
     // dozens of textures a frame, mostly of a few shapes. Making one took 263 us; from VMA's
     // shared blocks 90 us, but freeing them there left ~1 GB of those blocks unused.
-    const auto reusable = std::ranges::find_if(free_transcodes, [&](const PendingTranscode& t) {
-        return t.width == width && t.height == height && t.levels == levels && t.layers == batch_layers;
-    });
+    const auto reusable = (!low_vram && intermediate_size_per_layer <= (u64{16} << 20))
+        ? std::ranges::find_if(free_transcodes, [&](const PendingTranscode& t) {
+            return t.width == width && t.height == height && t.levels == levels && t.layers == batch_layers;
+          })
+        : free_transcodes.end();
     PendingTranscode pending;
     if (reusable != free_transcodes.end()) {
         pending = std::move(*reusable);
@@ -4987,19 +5019,26 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             decode_ci.arrayLayers = 1;
             decode = memory_allocator.TryCreateImage(decode_ci, true);
         }
-        if (!decode && !free_transcodes.empty()) {
+        if (!decode) {
             // The GPU is done with these: their memory goes back to the driver now.
             free_transcodes.clear();
+            scheduler.Finish();
+            while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
+                pending_transcodes.pop_front();
+            }
+            staging_buffer_pool.ReleaseAll(MemoryUsage::DeviceLocal);
+            staging_buffer_pool.ReleaseAll(MemoryUsage::Upload);
             decode = memory_allocator.TryCreateImage(decode_ci, true);
         }
         if (!decode) {
             static u32 logged{};
             if (logged++ < 32) {
-                LOG_ERROR(Render_Vulkan,
-                          "No memory to decode ASTC image {:#x} ({}x{}, {} levels); uploading it "
-                          "again when it is next used",
-                          image.gpu_addr, width, height, levels);
+                LOG_WARNING(Render_Vulkan,
+                            "No memory to decode ASTC image {:#x} ({}x{}, {} levels) on GPU; "
+                            "falling back to CPU decoding",
+                            image.gpu_addr, width, height, levels);
             }
+            image.flags &= ~VideoCommon::ImageFlagBits::AcceleratedUpload;
             image.flags |= VideoCommon::ImageFlagBits::CpuModified;
             TransitionImageLayout(image);
             return;
@@ -5052,7 +5091,8 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         });
         total += size;
     }
-    const auto output = staging_buffer_pool.Request(total, MemoryUsage::DeviceLocal);
+    const auto output = staging_buffer_pool.Request(
+        total, low_vram ? MemoryUsage::Upload : MemoryUsage::DeviceLocal);
     if (!output.buffer) {
         image.flags |= VideoCommon::ImageFlagBits::CpuModified;
         TransitionImageLayout(image);

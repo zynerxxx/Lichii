@@ -45,6 +45,7 @@ public:
     }
 
     void TickFrame();
+    void ReleaseAll(MemoryUsage usage);
 
 private:
     struct StreamBufferCommit {

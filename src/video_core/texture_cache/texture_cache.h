@@ -264,6 +264,18 @@ void TextureCache<P>::RunGarbageCollector(bool out_of_memory) {
         Configure(true);
         Collect();
     }
+    if (out_of_memory) {
+        if constexpr (requires { runtime.Finish(); }) {
+            runtime.Finish();
+        }
+        if constexpr (requires { runtime.CurrentTick(); }) {
+            while (!gpu_sentenced_images.empty() &&
+                   runtime.IsFree(gpu_sentenced_images.front().tick)) {
+                gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
+                gpu_sentenced_images.pop_front();
+            }
+        }
+    }
 }
 
 template <class P>
@@ -297,6 +309,7 @@ void TextureCache<P>::ApplyThresholdOverrides(bool log) {
 
 template <class P>
 void TextureCache<P>::TickFrame() {
+    joins_since_tick = 0;
     // Upload buffers grown for one huge image (title 1's 341 MiB terrain layer pools) are freed
     // rather than kept for the rest of the session.
     for (auto* const scratch : {&swizzle_data_buffer, &unswizzle_data_buffer}) {
@@ -2750,6 +2763,7 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         }
         total_used_memory -= (std::min)(total_used_memory, gpu_sentenced_bytes);
     }
+    ++joins_since_tick;
     const bool driver_near_limit = [&]() {
         if constexpr (requires { runtime.GetDeviceMemoryBudget(); runtime.GetDeviceMemoryUsage(); }) {
             const u64 budget = runtime.GetDeviceMemoryBudget();
@@ -2759,13 +2773,40 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         }
         return false;
     }();
-    if (total_used_memory >= expected_memory || driver_near_limit) {
+    if (joins_since_tick >= 16 || driver_near_limit) {
+        joins_since_tick = 0;
+        ++frame_tick;
+        if constexpr (requires { runtime.Finish(); }) {
+            runtime.Finish();
+        }
+        if constexpr (requires { runtime.CurrentTick(); }) {
+            while (!gpu_sentenced_images.empty() &&
+                   runtime.IsFree(gpu_sentenced_images.front().tick)) {
+                gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
+                gpu_sentenced_images.pop_front();
+            }
+        }
+        runtime.TickFrame();
         RunGarbageCollector(total_used_memory >= critical_memory || driver_near_limit);
+    } else if (total_used_memory >= expected_memory) {
+        RunGarbageCollector(total_used_memory >= critical_memory);
     }
     ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
     if constexpr (requires(const Image& image) { image.OutOfMemory(); }) {
         if (slot_images[new_image_id].OutOfMemory()) {
             slot_images.erase(new_image_id);
+            ++frame_tick;
+            if constexpr (requires { runtime.Finish(); }) {
+                runtime.Finish();
+            }
+            if constexpr (requires { runtime.CurrentTick(); }) {
+                while (!gpu_sentenced_images.empty() &&
+                       runtime.IsFree(gpu_sentenced_images.front().tick)) {
+                    gpu_sentenced_bytes -= gpu_sentenced_images.front().bytes;
+                    gpu_sentenced_images.pop_front();
+                }
+            }
+            runtime.TickFrame();
             RunGarbageCollector(true);
             new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
             if (slot_images[new_image_id].OutOfMemory()) {
