@@ -4947,8 +4947,8 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         const u32 level_height = (std::max)(height >> level, 1U);
         intermediate_size_per_layer += u64{level_width} * level_height * 4;
     }
-    intermediate_size_per_layer = (std::max)<u64>(intermediate_size_per_layer, 1);
-    constexpr u64 MaxBatchBytes = 64_MiB;
+    intermediate_size_per_layer = (std::max)(intermediate_size_per_layer, u64{1});
+    constexpr u64 MaxBatchBytes = u64{64} << 20;
     u32 batch_layers = (intermediate_size_per_layer * layers > MaxBatchBytes && layers > 1)
         ? std::clamp<u32>(static_cast<u32>(MaxBatchBytes / intermediate_size_per_layer), 1U, layers)
         : layers;
