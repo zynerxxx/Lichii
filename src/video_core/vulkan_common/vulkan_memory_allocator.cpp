@@ -302,7 +302,7 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
                                                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                                                VK_IMAGE_USAGE_STORAGE_BIT)) != 0;
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && ci.imageType != VK_IMAGE_TYPE_1D &&
-        huge && !is_render_target &&
+        !is_render_target &&
         device.CanUseUnbackedSparseImages() && device.IsSparseResidencyImage2DSupported()) {
         if (!huge) {
             pressure_events.fetch_add(1, std::memory_order_relaxed);
